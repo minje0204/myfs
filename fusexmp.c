@@ -55,17 +55,23 @@ static struct {
 
 static int xmp_getattr(const char *path, struct stat *stbuf)
 {
-  char fullpath[PATH_MAX];
-	int res;
+  char fullpaths[2][PATH_MAX];
+    int res[2] ={ 0,};
+    struct stat stbuf_[2];
 
-  sprintf(fullpath, "%s%s",
-      rand() % 2 == 0 ? global_context.driveA : global_context.driveB, path);
+    sprintf(fullpaths[0],"%s%s",global_context.driveA,path);
+    sprintf(fullpaths[1],"%s%s",global_context.driveB,path);
 
-	res = lstat(fullpath, stbuf);
-	if (res == -1)
+	res[0] = lstat(fullpaths[0], &stbuf_[0]);
+    res[1] = lstat(fullpaths[1], &stbuf_[1]);
+	if (res[0] == -1 || res[1] == -1)
 		return -errno;
-
-	return 0;
+    if(S_ISREG(stbuf_[0].st_mode)){
+        *stbuf = stbuf_[0];
+	return 0;}
+    stbuf_[0].st_size+=stbuf_[2].st_size;
+	*stbuf=stbuf_[0];
+return 0;
 }
 
 static int xmp_access(const char *path, int mask)
@@ -370,50 +376,79 @@ static int xmp_open(const char *path, struct fuse_file_info *fi)
 static int xmp_read(const char *path, char *buf, size_t size, off_t offset,
     struct fuse_file_info *fi)
 {
-  char fullpath[PATH_MAX];
+
+  char fullpaths[2][PATH_MAX];
   int fd;
-  int res;
-
-  sprintf(fullpath, "%s%s",
-      rand() % 2 == 0 ? global_context.driveA : global_context.driveB, path);
+  int res=0;
+  int mread;
+  int point_=0;
   (void) fi;
-  fd = open(fullpath, O_RDONLY);
-  if (fd == -1)
-    return -errno;
+  sprintf(fullpaths[0], "%s%s", global_context.driveA, path);
+  sprintf(fullpaths[1], "%s%s", global_context.driveB, path);
 
-  res = pread(fd, buf, size, offset);
-  if (res == -1)
-    res = -errno;
+int i=0;
+int _offset=0;
+while(1)
+{
+    mread =0;
+    fd = open(fullpaths[i%2], O_RDONLY);
+    if (fd == -1)
+      return -errno;
+    mread = pread(fd, buf+mread, 512, _offset);
+    mread+=mread;
+    if (mread == -1)
+      mread =-errno;
+close(fd);
+if(mread>=size)break;
+if(mread==0)break;
 
-  close(fd);
+   
+    res += mread;
+    if(i%2==1)
+        _offset+=512;
+    i++;
+}
   return res;
 }
 
 static int xmp_write(const char *path, const char *buf, size_t size,
     off_t offset, struct fuse_file_info *fi)
 {
-  char fullpaths[2][PATH_MAX];
-  int fd;
-  int res;
 
+  char fullpaths[2][PATH_MAX];
+  int fd = 0;
+  int res = 0;
   (void) fi;
 
   sprintf(fullpaths[0], "%s%s", global_context.driveA, path);
   sprintf(fullpaths[1], "%s%s", global_context.driveB, path);
 
-  for (int i = 0; i < 2; ++i) {
-    const char* fullpath = fullpaths[i];
+int to_written = size;
+int block_size = 0;
+int i = 0;
+int written = 0;
+int ress = 0;
+int _offset = 0;
+
+for(;to_written > 0;to_written-=block_size)
+{
+    to_written<512 ? (block_size = to_written):(block_size = 512);
+    const char* fullpath = fullpaths[i % 2];
 
     fd = open(fullpath, O_WRONLY);
     if (fd == -1)
       return -errno;
-
-    res = pwrite(fd, buf, size, offset);
-    if (res == -1)
-      res = -errno;
+    ress = pwrite(fd, buf+written, block_size, _offset);
+    written += ress; 
+    if (ress == -1)
+      return -errno;
 
     close(fd);
-  }
+    res += ress;
+    if(i%2==1)
+        _offset+=512;
+    i++;
+}
 
   return res;
 }
@@ -592,8 +627,8 @@ int main(int argc, char *argv[])
     exit(1);
   }
 
-  strcpy(global_context.driveB, argv[--argc]);
   strcpy(global_context.driveA, argv[--argc]);
+  strcpy(global_context.driveB, argv[--argc]);
 
   srand(time(NULL));
 
